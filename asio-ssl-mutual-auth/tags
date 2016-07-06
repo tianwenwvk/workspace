@@ -1,0 +1,37 @@
+!_TAG_FILE_FORMAT	2	/extended format; --format=1 will not append ;" to lines/
+!_TAG_FILE_SORTED	1	/0=unsorted, 1=sorted, 2=foldcase/
+!_TAG_PROGRAM_AUTHOR	Darren Hiebert	/dhiebert@users.sourceforge.net/
+!_TAG_PROGRAM_NAME	Exuberant Ctags	//
+!_TAG_PROGRAM_URL	http://ctags.sourceforge.net	/official site/
+!_TAG_PROGRAM_VERSION	5.9~svn20110310	//
+acceptor_	server.cpp	/^    boost::asio::ip::tcp::acceptor acceptor_;$/;"	m	class:server	file:
+client	client.cpp	/^    client(boost::asio::io_service& io_service, boost::asio::ssl::context& context,$/;"	f	class:client
+client	client.cpp	/^class client {$/;"	c	file:
+context_	server.cpp	/^    boost::asio::ssl::context context_;$/;"	m	class:server	file:
+data_	server.cpp	/^    char data_[max_length];$/;"	m	class:session	file:
+get_password	client.cpp	/^    std::string get_password() const {$/;"	f	class:client
+get_password	server.cpp	/^    std::string get_password() const {$/;"	f	class:server
+handle_accept	server.cpp	/^    void handle_accept(session* new_session,$/;"	f	class:server
+handle_connect	client.cpp	/^    void handle_connect(const boost::system::error_code& error,$/;"	f	class:client
+handle_handshake	client.cpp	/^    void handle_handshake(const boost::system::error_code& error) {$/;"	f	class:client
+handle_handshake	server.cpp	/^    void handle_handshake(const boost::system::error_code& error) {$/;"	f	class:session
+handle_read	client.cpp	/^    void handle_read(const boost::system::error_code& error,$/;"	f	class:client
+handle_read	server.cpp	/^    void handle_read(const boost::system::error_code& error,$/;"	f	class:session
+handle_write	client.cpp	/^    void handle_write(const boost::system::error_code& error,$/;"	f	class:client
+handle_write	server.cpp	/^    void handle_write(const boost::system::error_code& error) {$/;"	f	class:session
+io_service_	server.cpp	/^    boost::asio::io_service& io_service_;$/;"	m	class:server	file:
+main	client.cpp	/^int main(int argc, char* argv[]) {$/;"	f
+main	server.cpp	/^int main(int argc, char* argv[]) {$/;"	f
+max_length	client.cpp	/^    max_length = 1024$/;"	e	enum:__anon1	file:
+max_length	server.cpp	/^        max_length = 1024$/;"	e	enum:session::__anon2	file:
+reply_	client.cpp	/^    char reply_[max_length];$/;"	m	class:client	file:
+request_	client.cpp	/^    char request_[max_length];$/;"	m	class:client	file:
+server	server.cpp	/^    server(boost::asio::io_service& io_service, unsigned short port)$/;"	f	class:server
+server	server.cpp	/^class server {$/;"	c	file:
+session	server.cpp	/^    session(boost::asio::io_service& io_service, boost::asio::ssl::context& context)$/;"	f	class:session
+session	server.cpp	/^class session {$/;"	c	file:
+socket	server.cpp	/^    ssl_socket::lowest_layer_type& socket() {$/;"	f	class:session
+socket_	client.cpp	/^    boost::asio::ssl::stream<boost::asio::ip::tcp::socket> socket_;$/;"	m	class:client	file:
+socket_	server.cpp	/^    ssl_socket socket_;$/;"	m	class:session	file:
+ssl_socket	server.cpp	/^typedef boost::asio::ssl::stream<boost::asio::ip::tcp::socket> ssl_socket;$/;"	t	file:
+start	server.cpp	/^    void start() {$/;"	f	class:session
