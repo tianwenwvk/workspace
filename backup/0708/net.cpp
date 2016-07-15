@@ -36,16 +36,6 @@
 #include <boost/filesystem.hpp>
 #include <boost/thread.hpp>
 
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-
-#define SERVER_CERT_PATH "/var/certs/servers/server.pem"
-#define SERVER_KEY_PATH  "/var/certs/servers/server.key"
-#define CAFILE "/var/certs/servers/ca.pem"
-//#define CLIENT_CERT_PATH "/var/certs/clients/client.pem"
-//#define CLIENT_KEY_PATH  "/var/certs/clients/client.key"
-//#define CLIENT_CAFILE "/var/certs/clients/ca.pem"
-
 #include <math.h>
 
 // Dump addresses to peers.dat every 15 minutes (900s)
@@ -123,13 +113,6 @@ boost::condition_variable messageHandlerCondition;
 static CNodeSignals g_signals;
 CNodeSignals& GetNodeSignals() { return g_signals; }
 
-//initialize SSL
-static SSL_CTX* g_c_sslctx;
-static SSL_CTX* g_s_sslctx;
-static const char* peer_certificate_file;
-static const char* peer_private_key_file;
-static const char* peer_ca_file;
-
 void AddOneShot(const std::string& strDest)
 {
     LOCK(cs_vOneShots);
@@ -139,12 +122,6 @@ void AddOneShot(const std::string& strDest)
 unsigned short GetListenPort()
 {
     return (unsigned short)(GetArg("-port", Params().GetDefaultPort()));
-}
-void GetCertsPath()
-{
-	peer_certificate_file = GetArg("-peercertificatefile", SERVER_CERT_PATH).c_str();
-	peer_private_key_file = GetArg("-peerprivatekeyfile", SERVER_KEY_PATH).c_str();
-	peer_ca_file = GetArg("-peercafile", CAFILE).c_str();
 }
 
 // find 'best' local address for a particular peer
@@ -401,79 +378,6 @@ CNode* FindNode(const CService& addr)
             return (pnode);
     return NULL;
 }
-//ssl handshake, verfy cert, res=1
-static int verify_cb(int res, X509_STORE_CTX *xs)
-{
-    printf("SSL VERIFY RESULT :%d\n",res);
-    switch (xs->error)
-    {
-        case X509_V_ERR_UNABLE_TO_GET_CRL:
-            printf(" NOT GET CRL!\n");
-            return 1;
-        default :
-            break;
-    }
-    return res;
-}
-
-void sslctx_c_init()
-{
-#if 0
-    BIO *bio = NULL;
-    X509 *cert = NULL;
-    STACK_OF(X509) *ca = NULL;
-    EVP_PKEY *pkey =NULL;
-    PKCS12* p12 = NULL;
-    X509_STORE *store =NULL;
-    int error_code =0;
-#endif
-
-    //print_client_cert(CERT_PATH);
-    //registers the libssl error strings
-    SSL_load_error_strings();
-
-    //registers the available SSL/TLS ciphers and digests
-    SSL_library_init();
-
-    //creates a new SSL_CTX object as framework to establish TLS/SSL
-    g_c_sslctx = SSL_CTX_new(SSLv23_client_method());
-    if(g_c_sslctx == NULL){
-        return;
-    }
-
-    //passwd is supplied to protect the private key,when you want to read key
-    //SSL_CTX_set_default_passwd_cb_userdata(g_sslctx,"900820");
-
-    //set cipher ,when handshake client will send the cipher list to server
-    SSL_CTX_set_cipher_list(g_c_sslctx,"HIGH:MEDIA:LOW:!DH");
-    //SSL_CTX_set_cipher_list(g_sslctx,"AES128-SHA");
-
-    //set verify ,when recive the server certificate and verify it and verify_cb function will deal the result of verification
-    SSL_CTX_set_verify(g_c_sslctx, SSL_VERIFY_PEER, verify_cb);
-
-    //sets the maximum depth for the certificate chain verification that shall be allowed for ctx
-    SSL_CTX_set_verify_depth(g_c_sslctx, 10);
-
-    //load the certificate for verify server certificate, CA file usually load
-    SSL_CTX_load_verify_locations(g_c_sslctx,peer_ca_file, NULL);
-
-    //load user certificate,this cert will be send to server for server verify
-    if(SSL_CTX_use_certificate_file(g_c_sslctx,peer_certificate_file,SSL_FILETYPE_PEM) <= 0){
-        printf("certificate file error! %s\n", peer_certificate_file);
-        return;
-    }
-    //load user private key
-    if(SSL_CTX_use_PrivateKey_file(g_c_sslctx,peer_private_key_file,SSL_FILETYPE_PEM) <= 0){
-        printf("privatekey file error!\n");
-        return;
-    }
-    if(!SSL_CTX_check_private_key(g_c_sslctx)){
-        printf("Check private key failed!\n");
-        return;
-    }
-
-    return;
-}
 
 CNode* ConnectNode(CAddress addrConnect, const char *pszDest)
 {
@@ -509,29 +413,8 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest)
 
         addrman.Attempt(addrConnect);
 
-        //initialize SSL
-        sslctx_c_init();
-        if(g_c_sslctx == NULL){
-           LogPrintf("connect %s sslctx init failed!\n", addrConnect.ToString());
-           return NULL;
-         }
-		//ssl  connect
-		SSL *ssl = NULL;
-		ssl = SSL_new(g_c_sslctx);
-		if (!ssl) {
-			LogPrintf("can't get ssl from ctx!\n");
-			return NULL;
-		}
-		SSL_set_fd(ssl, hSocket);
-
-		if (SSL_connect(ssl) != 1) {
-			int err = ERR_get_error();
-			LogPrintf("Connect error code: %d ,string: %s\n", err, ERR_error_string(err,NULL));
-			return NULL;
-		}
-
         // Add node
-        CNode* pnode = new CNode(hSocket, ssl, addrConnect, pszDest ? pszDest : "", false);
+        CNode* pnode = new CNode(hSocket, addrConnect, pszDest ? pszDest : "", false);
         pnode->AddRef();
 
         {
@@ -557,12 +440,7 @@ void CNode::CloseSocketDisconnect()
     if (hSocket != INVALID_SOCKET)
     {
         LogPrint("net", "disconnecting peer=%d\n", id);
-
-        //close ssl connection
-        SSL_shutdown(ssl);
         CloseSocket(hSocket);
-        SSL_free(ssl);
-       // sslctx_release(g_c_sslctx);
     }
 
     // in case this fails, we'll empty the recv buffer when the CNode is deleted
@@ -861,6 +739,14 @@ int CNetMessage::readData(const char *pch, unsigned int nBytes)
     return nCopy;
 }
 
+
+
+
+
+
+
+
+
 // requires LOCK(cs_vSend)
 void SocketSendData(CNode *pnode)
 {
@@ -870,7 +756,7 @@ void SocketSendData(CNode *pnode)
         const CSerializeData &data = *it;
         assert(data.size() > pnode->nSendOffset);
         //int nBytes = send(pnode->hSocket, &data[pnode->nSendOffset], data.size() - pnode->nSendOffset, MSG_NOSIGNAL | MSG_DONTWAIT);
-        int nBytes = SSL_write(pnode->ssl, &data[pnode->nSendOffset], data.size() - pnode->nSendOffset);
+        int nBytes = SSL_write(pnode->sslSd, &data[pnode->nSendOffset], data.size() - pnode->nSendOffset);
         if (nBytes > 0) {
             pnode->nLastSend = GetTime();
             pnode->nSendBytes += nBytes;
@@ -1061,37 +947,13 @@ static bool AttemptToEvictConnection(bool fPreferNewConnection) {
 
     return true;
 }
-static void print_peer_certificate(SSL *ssl)
-{
-    X509* cert= NULL;
-    char buf[8192]={0};
-    BIO *bio_cert = NULL;
-    cert = SSL_get_peer_certificate(ssl);
-    if (cert != NULL) {
-		printf("Digital certificate information:\n");
-		X509_NAME_oneline(X509_get_subject_name(cert),buf,8191);
-		printf("Verified Peer Name:%s\n",buf);
-		memset(buf,0,sizeof(buf));
-		X509_NAME_oneline(X509_get_issuer_name(cert), buf, 8191);
-        printf("Issuer: %s\n", buf);
-		memset(buf,0,sizeof(buf));
-		bio_cert = BIO_new(BIO_s_mem());
-		PEM_write_bio_X509(bio_cert, cert);
-		BIO_read( bio_cert, buf, 8191);
-
-		printf("CLIENT CERT:\n%s\n",buf);
-		if(bio_cert)BIO_free(bio_cert);
-		if(cert)X509_free(cert);
-  }
-  else
-    printf("No certificate information！\n");
-}
 
 static void AcceptConnection(const ListenSocket& hListenSocket) {
     struct sockaddr_storage sockaddr;
     socklen_t len = sizeof(sockaddr);
     SOCKET hSocket = accept(hListenSocket.socket, (struct sockaddr*)&sockaddr, &len);
     CAddress addr;
+    SSL *ssl;
     int nInbound = 0;
     int nMaxInbound = nMaxConnections - MAX_OUTBOUND_CONNECTIONS;
 
@@ -1099,24 +961,13 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
         if (!addr.SetSockAddr((const struct sockaddr*)&sockaddr))
             LogPrintf("Warning: Unknown socket family\n");
 
-    //ssl  connect
-    SSL *ssl = NULL;
-    ssl = SSL_new(g_s_sslctx);
-    if(!ssl){
-       LogPrintf("can't get ssl from ctx!\n");
-       return;
-    }
-
+    //
+    ssl = SSL_new(ctx);
     SSL_set_fd(ssl, hSocket);
-    SSL_CTX_set_verify(SSL_get_SSL_CTX(ssl), SSL_VERIFY_PEER, NULL);
 
     if (SSL_accept(ssl) <= 0) {
-    	LogPrintf("Debug- failed at ssl_accept() \n");//
-    	ERR_print_errors_fp(stderr);
-    	CloseSocket(hSocket);
-        return;
+        ERR_print_errors_fp(stderr);
     }
-    print_peer_certificate(ssl);
 
     bool whitelisted = hListenSocket.whitelisted || CNode::IsWhitelistedRange(addr);
     {
@@ -1167,7 +1018,7 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
         }
     }
 
-    CNode* pnode = new CNode(hSocket, ssl, addr, "", true);
+    CNode* pnode = new CNode(hSocket, addr, "", true);
     pnode->AddRef();
     pnode->fWhitelisted = whitelisted;
 
@@ -1311,11 +1162,8 @@ void ThreadSocketHandler()
             }
         }
 
-        //TODO
-        //            int ret;
-        //            sslsock_handle_nbio(pnode->ssl, ret, &timeout);
-
-        int nSelect = select(have_fds ? hSocketMax + 1 : 0, &fdsetRecv, &fdsetSend, &fdsetError, &timeout);
+        int nSelect = select(have_fds ? hSocketMax + 1 : 0,
+                             &fdsetRecv, &fdsetSend, &fdsetError, &timeout);
         boost::this_thread::interruption_point();
 
         if (nSelect == SOCKET_ERROR)
@@ -1370,8 +1218,7 @@ void ThreadSocketHandler()
                     {
                         // typical socket buffer is 8K-64K
                         char pchBuf[0x10000];
-                        //int nBytes = recv(pnode->hSocket, pchBuf, sizeof(pchBuf), MSG_DONTWAIT);
-                        int nBytes = SSL_read(pnode->ssl, pchBuf, sizeof(pchBuf));
+                        int nBytes = recv(pnode->hSocket, pchBuf, sizeof(pchBuf), MSG_DONTWAIT);
                         if (nBytes > 0)
                         {
                             if (!pnode->ReceiveMsgBytes(pchBuf, nBytes))
@@ -1398,7 +1245,6 @@ void ThreadSocketHandler()
                                 pnode->CloseSocketDisconnect();
                             }
                         }
-
                     }
                 }
             }
@@ -1934,59 +1780,11 @@ void ThreadMessageHandler()
     }
 }
 
-bool sslctx_s_init()
-{
-	const SSL_METHOD *method;
-	//init_openssl();
-	SSL_load_error_strings();
-	//registers the available SSL/TLS ciphers and digests
-	SSL_library_init();
-	//OpenSSL_add_ssl_algorithms();
-
-	method = SSLv23_server_method();
-	g_s_sslctx = SSL_CTX_new(method);
-	if (!g_s_sslctx) {
-		perror("Unable to create SSL context");
-		ERR_print_errors_fp(stderr);
-		return false;
-	}
-	//configure_SSL_CTX(ctx);
-	// SSL_CTX_set_ecdh_auto(ctx, 1);
-	SSL_CTX_set_verify(g_s_sslctx, SSL_VERIFY_PEER, verify_cb);
-	SSL_CTX_set_verify_depth(g_s_sslctx, 10);
-	//SSL_CTX_load_verify_locations(g_s_sslctx, peer_ca_file, NULL);
-	/* Set the key and cert */
-	if (SSL_CTX_use_certificate_file(g_s_sslctx, peer_certificate_file, SSL_FILETYPE_PEM)< 0) {
-		ERR_print_errors_fp(stderr);
-		return false;
-	}
-
-	if (SSL_CTX_use_PrivateKey_file(g_s_sslctx, peer_private_key_file, SSL_FILETYPE_PEM)< 0) {
-		ERR_print_errors_fp(stderr);
-		return false;
-	}
-
-	if (!SSL_CTX_check_private_key(g_s_sslctx)) {
-		printf("Check private key failed!\n");
-		ERR_print_errors_fp(stdout);
-		return false;
-	}
-
-	SSL_CTX_set_client_CA_list(g_s_sslctx, SSL_load_client_CA_file(peer_ca_file));
-
-	return true;
-}
 bool BindListenPort(const CService &addrBind, string& strError, bool fWhitelisted)
 {
     strError = "";
     int nOne = 1;
 
-    //initialize SSL
-    sslctx_s_init();
-    if(g_s_sslctx == NULL){
-        LogPrintf("connect %s sslctx init failed!\n", addrBind.ToString());
-        return false;
-    }
     // Create socket for listening for incoming connections
     struct sockaddr_storage sockaddr;
     socklen_t len = sizeof(sockaddr);
@@ -2163,7 +1961,7 @@ void StartNode(boost::thread_group& threadGroup, CScheduler& scheduler)
     }
 
     if (pnodeLocalHost == NULL)
-        pnodeLocalHost = new CNode(INVALID_SOCKET, NULL, CAddress(CService("127.0.0.1", 0), nLocalServices));
+        pnodeLocalHost = new CNode(INVALID_SOCKET, CAddress(CService("127.0.0.1", 0), nLocalServices));
 
     Discover(threadGroup);
 
@@ -2545,14 +2343,13 @@ bool CAddrDB::Read(CAddrMan& addr)
 unsigned int ReceiveFloodSize() { return 1000*GetArg("-maxreceivebuffer", DEFAULT_MAXRECEIVEBUFFER); }
 unsigned int SendBufferSize() { return 1000*GetArg("-maxsendbuffer", DEFAULT_MAXSENDBUFFER); }
 
-CNode::CNode(SOCKET hSocketIn, SSL* sslIn, const CAddress& addrIn, const std::string& addrNameIn, bool fInboundIn) :
+CNode::CNode(SOCKET hSocketIn, const CAddress& addrIn, const std::string& addrNameIn, bool fInboundIn) :
     ssSend(SER_NETWORK, INIT_PROTO_VERSION),
     addrKnown(5000, 0.001),
     filterInventoryKnown(50000, 0.000001)
 {
     nServices = 0;
     hSocket = hSocketIn;
-    ssl = sslIn;
     nRecvVersion = INIT_PROTO_VERSION;
     nLastSend = 0;
     nLastRecv = 0;
