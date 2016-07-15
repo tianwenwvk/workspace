@@ -97,15 +97,15 @@ public:
         
         //context_.set_password_callback(boost::bind(&server::get_password, this));
 
-        context_.use_certificate_chain_file("./certs/server.crt");
-        context_.use_private_key_file("./certs/server.key", boost::asio::ssl::context::pem);
-        context_.use_tmp_dh_file("./certs/dh1024.pem");
+        context_.use_certificate_chain_file("/var/certs/server_certs/server.crt");
+        context_.use_private_key_file("/var/certs/server_certs/server.key", boost::asio::ssl::context::pem);
+        context_.use_tmp_dh_file("/var/certs/server_certs/dh1024.pem");
         
         /**
          * verify client auth
          */
         context_.set_verify_mode(boost::asio::ssl::context::verify_fail_if_no_peer_cert | boost::asio::ssl::context::verify_peer);
-        context_.load_verify_file("./client_certs/client.crt");
+        context_.load_verify_file("/var/certs/client_certs/client.crt");
         
         session* new_session = new session(io_service_, context_);
         acceptor_.async_accept(new_session->socket(),
