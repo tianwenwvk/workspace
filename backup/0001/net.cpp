@@ -19,6 +19,7 @@
 #include "scheduler.h"
 #include "ui_interface.h"
 #include "utilstrencodings.h"
+#include "util.h"
 
 #ifdef WIN32
 #include <string.h>
@@ -39,12 +40,9 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-#define SERVER_CERT_PATH "/var/certs/servers/server.pem"
-#define SERVER_KEY_PATH  "/var/certs/servers/server.key"
-#define CAFILE "/var/certs/servers/ca.pem"
-//#define CLIENT_CERT_PATH "/var/certs/clients/client.pem"
-//#define CLIENT_KEY_PATH  "/var/certs/clients/client.key"
-//#define CLIENT_CAFILE "/var/certs/clients/ca.pem"
+//#define SERVER_CERT_PATH "/var/certs/servers/server.pem"
+//#define SERVER_KEY_PATH  "/var/certs/servers/server.key"
+//#define CAFILE "/var/certs/servers/ca.pem"
 
 #include <math.h>
 
@@ -129,6 +127,9 @@ static SSL_CTX* g_s_sslctx;
 static const char* peer_certificate_file;
 static const char* peer_private_key_file;
 static const char* peer_ca_file;
+static const char* SERVER_CERT_PATH = "server.pem";
+static const char* SERVER_KEY_PATH = "server.key";
+static const char* CAFILE = "ca.pem";
 
 void AddOneShot(const std::string& strDest)
 {
@@ -140,11 +141,165 @@ unsigned short GetListenPort()
 {
     return (unsigned short)(GetArg("-port", Params().GetDefaultPort()));
 }
-void GetCertsPath()
+
+// load peer certificate path from config file
+static void LoadCertsPath()
 {
-	peer_certificate_file = GetArg("-peercertificatefile", SERVER_CERT_PATH).c_str();
-	peer_private_key_file = GetArg("-peerprivatekeyfile", SERVER_KEY_PATH).c_str();
-	peer_ca_file = GetArg("-peercafile", CAFILE).c_str();
+	LogPrintf("Debug -LoadCertsPath start %s\n", peer_certificate_file);
+	peer_certificate_file = (GetPeerCertDir()/SERVER_CERT_PATH).string().c_str();//GetArg("-peercertificatefile", SERVER_CERT_PATH).c_str();
+	peer_private_key_file = (GetPeerCertDir()/SERVER_KEY_PATH).string().c_str();//GetArg("-peerprivatekeyfile", SERVER_KEY_PATH).c_str();
+	peer_ca_file = (GetPeerCertDir()/CAFILE).string().c_str();//GetArg("-peercafile", CAFILE).c_str();
+	LogPrintf("Debug -LoadCertsPath done %s\n", peer_certificate_file);
+}
+
+//ssl handshake, verfy cert, res=1
+static int verify_cb(int res, X509_STORE_CTX *xs)
+{
+    switch (xs->error)
+    {
+        case X509_V_ERR_UNABLE_TO_GET_CRL:
+            printf(" NOT GET CRL!\n");
+            return 1;
+        default :
+        	LogPrintf("SSL VERIFY RESULT :%d\n",res);
+        	break;
+    }
+    return res;
+}
+static void print_peer_certificate(SSL *ssl)
+{
+    X509* cert= NULL;
+    char buf[8192]={0};
+    BIO *bio_cert = NULL;
+    cert = SSL_get_peer_certificate(ssl);
+    if (cert != NULL) {
+		printf("Digital certificate information:\n");
+		X509_NAME_oneline(X509_get_subject_name(cert),buf,8191);
+		printf("Verified Peer Name:%s\n",buf);
+		memset(buf,0,sizeof(buf));
+		X509_NAME_oneline(X509_get_issuer_name(cert), buf, 8191);
+        printf("Issuer: %s\n", buf);
+		memset(buf,0,sizeof(buf));
+		bio_cert = BIO_new(BIO_s_mem());
+		PEM_write_bio_X509(bio_cert, cert);
+		BIO_read( bio_cert, buf, 8191);
+
+		//printf("PEER CERT:\n%s\n",buf);
+		if(bio_cert)BIO_free(bio_cert);
+		if(cert)X509_free(cert);
+  }
+  else
+    printf("No certificate information！\n");
+}
+
+static bool sslctx_s_init()
+{
+	LogPrintf("Debug sslctc_s_init() call start \n");
+
+	const SSL_METHOD *method;
+	LoadCertsPath();
+	SSL_library_init();
+	SSL_load_error_strings();
+
+	method = SSLv23_server_method();
+	g_s_sslctx = SSL_CTX_new(method);
+	if (!g_s_sslctx) {
+		LogPrintf("Error -Unable to create server SSL context");
+		ERR_print_errors_fp(stderr);
+		return false;
+	}
+
+	//SSL_CTX_set_ecdh_auto(g_s_sslctx, 1);
+	SSL_CTX_set_cipher_list(g_s_sslctx,"HIGH:!DSS:!aNULL@STRENGTH");
+	//"TLSv1+HIGH:!SSLv2:!aNULL:!eNULL:!AH:!3DES:@STRENGTH");
+	SSL_CTX_set_verify(g_s_sslctx, SSL_VERIFY_PEER, verify_cb);
+	SSL_CTX_set_verify_depth(g_s_sslctx, 10);
+	SSL_CTX_load_verify_locations(g_s_sslctx, peer_ca_file, NULL);
+	/* Set the key and cert */
+	LogPrintf("sslctx_s_init() peer_certificate_file: %s\n", peer_certificate_file);
+	if (SSL_CTX_use_certificate_file(g_s_sslctx, peer_certificate_file, SSL_FILETYPE_PEM)< 0) {
+		LogPrintf("Error -Use server certificate file failed! peer_certificate_file:%s\n", peer_certificate_file);
+		ERR_print_errors_fp(stderr);
+		return false;
+	}
+
+	if (SSL_CTX_use_PrivateKey_file(g_s_sslctx, peer_private_key_file, SSL_FILETYPE_PEM)< 0) {
+		LogPrintf("Error -Use server private key file failed! peer_private_key_file:%s\n", peer_private_key_file);
+		ERR_print_errors_fp(stderr);
+		return false;
+	}
+
+	if (!SSL_CTX_check_private_key(g_s_sslctx)) {
+		LogPrintf("Error -Check server private key failed!\n");
+		ERR_print_errors_fp(stdout);
+		return false;
+	}
+
+	SSL_CTX_set_client_CA_list(g_s_sslctx, SSL_load_client_CA_file(peer_ca_file));
+
+	LogPrintf("Debug sslctc_s_init() call success \n");
+	return true;
+}
+
+static bool sslctx_c_init()
+{
+//#if 0
+//    BIO *bio = NULL;
+//    X509 *cert = NULL;
+//    STACK_OF(X509) *ca = NULL;
+//    EVP_PKEY *pkey =NULL;
+//    PKCS12* p12 = NULL;
+//    X509_STORE *store =NULL;
+//    int error_code =0;
+//#endif
+
+    //LoadCertsPath();
+    //print_client_cert(CERT_PATH);
+    SSL_library_init();
+    SSL_load_error_strings();
+
+    //creates a new SSL_CTX object as framework to establish TLS/SSL
+    g_c_sslctx = SSL_CTX_new(SSLv23_client_method());
+    if(g_c_sslctx == NULL){
+    	LogPrintf("Error -Unable to create client SSL context");
+    	ERR_print_errors_fp(stderr);
+        return false;
+    }
+
+    //passwd is supplied to protect the private key,when you want to read key
+    //SSL_CTX_set_default_passwd_cb_userdata(g_sslctx,"900820");
+
+    //set cipher ,when handshake client will send the cipher list to server
+    SSL_CTX_set_cipher_list(g_c_sslctx,"HIGH:MEDIA:LOW:!DH");
+    //"TLSv1+HIGH:!SSLv2:!aNULL:!eNULL:!AH:!3DES:@STRENGTH");
+
+    //set verify ,when recive the server certificate and verify it and verify_cb function will deal the result of verification
+    SSL_CTX_set_verify(g_c_sslctx, SSL_VERIFY_PEER, verify_cb);
+
+    //sets the maximum depth for the certificate chain verification that shall be allowed for ctx
+    SSL_CTX_set_verify_depth(g_c_sslctx, 10);
+
+    //load the certificate for verify server certificate, CA file usually load
+    SSL_CTX_load_verify_locations(g_c_sslctx,peer_ca_file, NULL);
+
+    //load user certificate,this cert will be send to server for server verify
+    LogPrintf("sslctx_c_init() peer_certificate_file: %s\n", peer_certificate_file);
+    if(SSL_CTX_use_certificate_file(g_c_sslctx,peer_certificate_file,SSL_FILETYPE_PEM) <= 0){
+        LogPrintf("Error -Use client certificate file error! peer_certificate_file:%s\n", peer_certificate_file);
+        return false;
+    }
+
+    if(SSL_CTX_use_PrivateKey_file(g_c_sslctx,peer_private_key_file,SSL_FILETYPE_PEM) <= 0){
+        LogPrintf("Error -Use client private key file error! peer_private_key_file:%s\n", peer_private_key_file);
+        return false;
+    }
+
+    if(!SSL_CTX_check_private_key(g_c_sslctx)){
+        LogPrintf("Error -Check client private key failed!\n");
+        return false;
+    }
+
+    return true;
 }
 
 // find 'best' local address for a particular peer
@@ -401,79 +556,6 @@ CNode* FindNode(const CService& addr)
             return (pnode);
     return NULL;
 }
-//ssl handshake, verfy cert, res=1
-static int verify_cb(int res, X509_STORE_CTX *xs)
-{
-    printf("SSL VERIFY RESULT :%d\n",res);
-    switch (xs->error)
-    {
-        case X509_V_ERR_UNABLE_TO_GET_CRL:
-            printf(" NOT GET CRL!\n");
-            return 1;
-        default :
-            break;
-    }
-    return res;
-}
-
-void sslctx_c_init()
-{
-#if 0
-    BIO *bio = NULL;
-    X509 *cert = NULL;
-    STACK_OF(X509) *ca = NULL;
-    EVP_PKEY *pkey =NULL;
-    PKCS12* p12 = NULL;
-    X509_STORE *store =NULL;
-    int error_code =0;
-#endif
-
-    //print_client_cert(CERT_PATH);
-    //registers the libssl error strings
-    SSL_load_error_strings();
-
-    //registers the available SSL/TLS ciphers and digests
-    SSL_library_init();
-
-    //creates a new SSL_CTX object as framework to establish TLS/SSL
-    g_c_sslctx = SSL_CTX_new(SSLv23_client_method());
-    if(g_c_sslctx == NULL){
-        return;
-    }
-
-    //passwd is supplied to protect the private key,when you want to read key
-    //SSL_CTX_set_default_passwd_cb_userdata(g_sslctx,"900820");
-
-    //set cipher ,when handshake client will send the cipher list to server
-    SSL_CTX_set_cipher_list(g_c_sslctx,"HIGH:MEDIA:LOW:!DH");
-    //SSL_CTX_set_cipher_list(g_sslctx,"AES128-SHA");
-
-    //set verify ,when recive the server certificate and verify it and verify_cb function will deal the result of verification
-    SSL_CTX_set_verify(g_c_sslctx, SSL_VERIFY_PEER, verify_cb);
-
-    //sets the maximum depth for the certificate chain verification that shall be allowed for ctx
-    SSL_CTX_set_verify_depth(g_c_sslctx, 10);
-
-    //load the certificate for verify server certificate, CA file usually load
-    SSL_CTX_load_verify_locations(g_c_sslctx,peer_ca_file, NULL);
-
-    //load user certificate,this cert will be send to server for server verify
-    if(SSL_CTX_use_certificate_file(g_c_sslctx,peer_certificate_file,SSL_FILETYPE_PEM) <= 0){
-        printf("certificate file error! %s\n", peer_certificate_file);
-        return;
-    }
-    //load user private key
-    if(SSL_CTX_use_PrivateKey_file(g_c_sslctx,peer_private_key_file,SSL_FILETYPE_PEM) <= 0){
-        printf("privatekey file error!\n");
-        return;
-    }
-    if(!SSL_CTX_check_private_key(g_c_sslctx)){
-        printf("Check private key failed!\n");
-        return;
-    }
-
-    return;
-}
 
 CNode* ConnectNode(CAddress addrConnect, const char *pszDest)
 {
@@ -510,26 +592,33 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest)
         addrman.Attempt(addrConnect);
 
         //initialize SSL
-        sslctx_c_init();
         if(g_c_sslctx == NULL){
-           LogPrintf("connect %s sslctx init failed!\n", addrConnect.ToString());
-           return NULL;
+        	if(!sslctx_c_init()){
+        		LogPrintf("Error can't initialize client sslctx!\n");
+        		CloseSocket(hSocket);
+        		return NULL;
+        	}
          }
 		//ssl  connect
 		SSL *ssl = NULL;
 		ssl = SSL_new(g_c_sslctx);
 		if (!ssl) {
 			LogPrintf("can't get ssl from ctx!\n");
+			CloseSocket(hSocket);
 			return NULL;
 		}
 		SSL_set_fd(ssl, hSocket);
 
 		if (SSL_connect(ssl) != 1) {
 			int err = ERR_get_error();
-			LogPrintf("Connect error code: %d ,string: %s\n", err, ERR_error_string(err,NULL));
+			LogPrintf("SSL_connect %s error code: %d ,string: %s\n", addrConnect.ToString(), err, ERR_error_string(err,NULL));
+			CloseSocket(hSocket);
 			return NULL;
 		}
-
+		else{
+			LogPrintf("SSL_connected with %s encryption\n", SSL_get_cipher(ssl));
+			print_peer_certificate(ssl);//server cert
+		}
         // Add node
         CNode* pnode = new CNode(hSocket, ssl, addrConnect, pszDest ? pszDest : "", false);
         pnode->AddRef();
@@ -560,9 +649,9 @@ void CNode::CloseSocketDisconnect()
 
         //close ssl connection
         SSL_shutdown(ssl);
-        CloseSocket(hSocket);
         SSL_free(ssl);
-       // sslctx_release(g_c_sslctx);
+        CloseSocket(hSocket);
+        //SSL_CTX_free(g_c_sslctx);
     }
 
     // in case this fails, we'll empty the recv buffer when the CNode is deleted
@@ -1061,31 +1150,6 @@ static bool AttemptToEvictConnection(bool fPreferNewConnection) {
 
     return true;
 }
-static void print_peer_certificate(SSL *ssl)
-{
-    X509* cert= NULL;
-    char buf[8192]={0};
-    BIO *bio_cert = NULL;
-    cert = SSL_get_peer_certificate(ssl);
-    if (cert != NULL) {
-		printf("Digital certificate information:\n");
-		X509_NAME_oneline(X509_get_subject_name(cert),buf,8191);
-		printf("Verified Peer Name:%s\n",buf);
-		memset(buf,0,sizeof(buf));
-		X509_NAME_oneline(X509_get_issuer_name(cert), buf, 8191);
-        printf("Issuer: %s\n", buf);
-		memset(buf,0,sizeof(buf));
-		bio_cert = BIO_new(BIO_s_mem());
-		PEM_write_bio_X509(bio_cert, cert);
-		BIO_read( bio_cert, buf, 8191);
-
-		printf("CLIENT CERT:\n%s\n",buf);
-		if(bio_cert)BIO_free(bio_cert);
-		if(cert)X509_free(cert);
-  }
-  else
-    printf("No certificate information！\n");
-}
 
 static void AcceptConnection(const ListenSocket& hListenSocket) {
     struct sockaddr_storage sockaddr;
@@ -1101,9 +1165,17 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
 
     //ssl  connect
     SSL *ssl = NULL;
+    if(g_s_sslctx==NULL){
+    	if(!sslctx_s_init()){
+    		LogPrintf("Error can't initialize server sslctx!\n");
+    		CloseSocket(hSocket);
+    		return;
+    	}
+    }
     ssl = SSL_new(g_s_sslctx);
     if(!ssl){
        LogPrintf("can't get ssl from ctx!\n");
+       CloseSocket(hSocket);
        return;
     }
 
@@ -1116,7 +1188,10 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
     	CloseSocket(hSocket);
         return;
     }
-    print_peer_certificate(ssl);
+    else {
+    	LogPrintf("Debug- succerss at ssl_accept() \n");//
+    }
+  //  print_peer_certificate(ssl);
 
     bool whitelisted = hListenSocket.whitelisted || CNode::IsWhitelistedRange(addr);
     {
@@ -1934,59 +2009,12 @@ void ThreadMessageHandler()
     }
 }
 
-bool sslctx_s_init()
-{
-	const SSL_METHOD *method;
-	//init_openssl();
-	SSL_load_error_strings();
-	//registers the available SSL/TLS ciphers and digests
-	SSL_library_init();
-	//OpenSSL_add_ssl_algorithms();
 
-	method = SSLv23_server_method();
-	g_s_sslctx = SSL_CTX_new(method);
-	if (!g_s_sslctx) {
-		perror("Unable to create SSL context");
-		ERR_print_errors_fp(stderr);
-		return false;
-	}
-	//configure_SSL_CTX(ctx);
-	// SSL_CTX_set_ecdh_auto(ctx, 1);
-	SSL_CTX_set_verify(g_s_sslctx, SSL_VERIFY_PEER, verify_cb);
-	SSL_CTX_set_verify_depth(g_s_sslctx, 10);
-	//SSL_CTX_load_verify_locations(g_s_sslctx, peer_ca_file, NULL);
-	/* Set the key and cert */
-	if (SSL_CTX_use_certificate_file(g_s_sslctx, peer_certificate_file, SSL_FILETYPE_PEM)< 0) {
-		ERR_print_errors_fp(stderr);
-		return false;
-	}
-
-	if (SSL_CTX_use_PrivateKey_file(g_s_sslctx, peer_private_key_file, SSL_FILETYPE_PEM)< 0) {
-		ERR_print_errors_fp(stderr);
-		return false;
-	}
-
-	if (!SSL_CTX_check_private_key(g_s_sslctx)) {
-		printf("Check private key failed!\n");
-		ERR_print_errors_fp(stdout);
-		return false;
-	}
-
-	SSL_CTX_set_client_CA_list(g_s_sslctx, SSL_load_client_CA_file(peer_ca_file));
-
-	return true;
-}
 bool BindListenPort(const CService &addrBind, string& strError, bool fWhitelisted)
 {
     strError = "";
     int nOne = 1;
 
-    //initialize SSL
-    sslctx_s_init();
-    if(g_s_sslctx == NULL){
-        LogPrintf("connect %s sslctx init failed!\n", addrBind.ToString());
-        return false;
-    }
     // Create socket for listening for incoming connections
     struct sockaddr_storage sockaddr;
     socklen_t len = sizeof(sockaddr);
@@ -1997,6 +2025,7 @@ bool BindListenPort(const CService &addrBind, string& strError, bool fWhiteliste
         return false;
     }
 
+    //SOCKET hListenSocket = socket(((struct sockaddr*)&sockaddr)->sa_family, SOCK_STREAM, IPPROTO_TCP);
     SOCKET hListenSocket = socket(((struct sockaddr*)&sockaddr)->sa_family, SOCK_STREAM, IPPROTO_TCP);
     if (hListenSocket == INVALID_SOCKET)
     {
@@ -2010,7 +2039,7 @@ bool BindListenPort(const CService &addrBind, string& strError, bool fWhiteliste
         LogPrintf("%s\n", strError);
         return false;
     }
-
+    LogPrintf("socket create %s success \n", addrBind.ToString());
 
 #ifndef WIN32
 #ifdef SO_NOSIGPIPE
@@ -2061,7 +2090,7 @@ bool BindListenPort(const CService &addrBind, string& strError, bool fWhiteliste
         CloseSocket(hListenSocket);
         return false;
     }
-    LogPrintf("Bound to %s\n", addrBind.ToString());
+    LogPrintf("*********************** Bound to %s\n", addrBind.ToString());
 
     // Listen for incoming connections
     if (listen(hListenSocket, SOMAXCONN) == SOCKET_ERROR)
@@ -2170,6 +2199,8 @@ void StartNode(boost::thread_group& threadGroup, CScheduler& scheduler)
     //
     // Start threads
     //
+
+    sslctx_s_init();
 
     if (!GetBoolArg("-dnsseed", true))
         LogPrintf("DNS seeding disabled\n");
